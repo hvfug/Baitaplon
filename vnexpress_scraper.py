@@ -3,7 +3,12 @@ from bs4 import BeautifulSoup
 import pandas as pd
 import schedule
 import time
+import concurrent.futures
 
+# Bước 1: Định nghĩa URL gốc của chuyên mục
+BASE_URL = 'https://vnexpress.net/khoa-hoc-cong-nghe-p'
+
+# Bước 2: Hàm lấy chi tiết nội dung bài viết
 def get_article_details(article_url):
     try:
         res = requests.get(article_url, headers={'User-Agent': 'Mozilla/5.0'})
@@ -19,19 +24,27 @@ def get_article_details(article_url):
         print(f"Lỗi khi lấy chi tiết bài viết: {e}")
         return ''
 
-def scrape_vnexpress_congnghe(pages=5):
-    base_url = 'https://vnexpress.net/cong-nghe-p'
+# Bước 3: Hàm lấy tất cả các trang với tối ưu hiệu suất
+def get_all_pages():
     articles = []
+    page = 1
 
-    for page in range(1, pages + 1):
-        url = base_url + str(page)
+    while True:
+        url = f'{BASE_URL}{page}'
         print(f'Đang lấy dữ liệu từ trang: {url}')
-        res = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'})
-        soup = BeautifulSoup(res.content, 'html.parser')
+        try:
+            res = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'})
+            soup = BeautifulSoup(res.content, 'html.parser')
 
-        items = soup.find_all('article', class_='item-news')
-        for item in items:
-            try:
+            items = soup.find_all('article', class_='item-news')
+            if not items:
+                break
+
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                futures = [executor.submit(get_article_details, item.find('a')['href']) for item in items if item.find('a')]
+                contents = [future.result() for future in concurrent.futures.as_completed(futures)]
+
+            for item, content in zip(items, contents):
                 title_tag = item.find('h3', class_='title-news')
                 if not title_tag:
                     continue
@@ -41,9 +54,7 @@ def scrape_vnexpress_congnghe(pages=5):
                 description_tag = item.find('p', class_='description')
                 description = description_tag.get_text(strip=True) if description_tag else ''
                 img_tag = item.find('img')
-                img_url = img_tag['data-src'] if img_tag and 'data-src' in img_tag.attrs else (img_tag['src'] if img_tag else '')
-
-                content = get_article_details(link)
+                img_url = img_tag.get('data-src', '') if img_tag else ''
 
                 articles.append({
                     'Tiêu đề': title,
@@ -53,20 +64,23 @@ def scrape_vnexpress_congnghe(pages=5):
                     'Link bài viết': link
                 })
 
-                time.sleep(1)
+        except Exception as e:
+            print(f'Lỗi xử lý trang {page}: {e}')
 
-            except Exception as e:
-                print(f'Lỗi xử lý bài viết: {e}')
-                continue
+        page += 1
 
+    return articles
+
+# Bước 4: Lưu dữ liệu vào file CSV
+def save_to_csv(articles):
     df = pd.DataFrame(articles)
     df.to_csv('vnexpress_congnghe.csv', index=False, encoding='utf-8-sig')
     print('✅ Đã lưu dữ liệu vào vnexpress_congnghe.csv')
 
-# Lên lịch chạy tự động mỗi ngày lúc 6h sáng
-schedule.every().day.at("14:31").do(scrape_vnexpress_congnghe, pages=5)
+# Bước 5: Định nghĩa lịch chạy tự động hàng ngày
+schedule.every().day.at("14:32").do(lambda: save_to_csv(get_all_pages()))
 
-print("⏰ Đang chờ đến 6h sáng mỗi ngày để chạy scraper...")
+print("⏰ Đang chờ đến 06:00 mỗi ngày để chạy scraper...")
 
 while True:
     schedule.run_pending()
